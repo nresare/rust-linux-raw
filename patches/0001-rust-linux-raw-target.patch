@@ -1,0 +1,54 @@
+--- a/compiler/rustc_target/src/spec/mod.rs
++++ b/compiler/rustc_target/src/spec/mod.rs
+@@ -1440,6 +1440,7 @@
+ 
+ supported_targets! {
+     ("x86_64-unknown-linux-gnu", x86_64_unknown_linux_gnu),
++    ("x86_64-unknown-linux-raw", x86_64_unknown_linux_raw),
+     ("x86_64-unknown-linux-gnux32", x86_64_unknown_linux_gnux32),
+     ("i686-unknown-linux-gnu", i686_unknown_linux_gnu),
+     ("i586-unknown-linux-gnu", i586_unknown_linux_gnu),
+--- /dev/null
++++ b/compiler/rustc_target/src/spec/targets/x86_64_unknown_linux_raw.rs
+@@ -0,0 +1,26 @@
++use crate::spec::{Cc, LinkerFlavor, Lld, RelocModel, SanitizerSet, Target, TargetMetadata};
++
++pub(crate) fn target() -> Target {
++    let mut target = super::x86_64_unknown_linux_gnu::target();
++    let options = &mut target.options;
++    options.dynamic_linking = false;
++    options.has_rpath = false;
++    options.position_independent_executables = false;
++    options.static_position_independent_executables = false;
++    options.relocation_model = RelocModel::Static;
++    options.crt_static_default = true;
++    options.supported_sanitizers = SanitizerSet::empty();
++    options.supports_fentry = false;
++    options.supports_xray = false;
++    options.add_pre_link_args(
++        LinkerFlavor::Gnu(Cc::Yes, Lld::No),
++        &["-nostdlib", "-static", "-no-pie", "-Wl,-u,_start"],
++    );
++    target.metadata = TargetMetadata {
++        description: Some("Experimental static Linux with c-scape and Origin".into()),
++        tier: Some(3),
++        host_tools: Some(false),
++        std: Some(true),
++    };
++    target
++}
+--- a/src/bootstrap/src/utils/cc_detect.rs
++++ b/src/bootstrap/src/utils/cc_detect.rs
+@@ -38,7 +38,11 @@
+         .debug(false)
+         // We have to configure out_dir, otherwise flag_if_supported will not work
+         .out_dir(build.tempdir().join("cc-rs-out-dir"))
+-        .target(&target.triple)
++        .target(if &*target.triple == "x86_64-unknown-linux-raw" {
++            "x86_64-unknown-linux-gnu"
++        } else {
++            &target.triple
++        })
+         .host(&build.host_target.triple);
+ 
+     match build.config.compress_debuginfo(target) {

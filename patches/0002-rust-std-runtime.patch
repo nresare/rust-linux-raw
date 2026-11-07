@@ -1,0 +1,17 @@
+--- a/library/std/build.rs
++++ b/library/std/build.rs
+@@ -2,6 +2,14 @@
+ 
+ fn main() {
+     println!("cargo:rerun-if-changed=build.rs");
++    println!("cargo:rerun-if-env-changed=RUST_LINUX_RAW_RUNTIME");
++    if env::var("TARGET").as_deref() == Ok("x86_64-unknown-linux-raw") {
++        let runtime = env::var("RUST_LINUX_RAW_RUNTIME")
++            .expect("set RUST_LINUX_RAW_RUNTIME to the c-scape runtime archive directory");
++        println!("cargo:rustc-link-search=native={runtime}");
++        println!("cargo:rustc-link-lib=static:+whole-archive,-bundle=linux_raw_runtime");
++    }
++
+     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").expect("CARGO_CFG_TARGET_ARCH was not set");
+     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS was not set");
+     let target_vendor =

@@ -1,0 +1,411 @@
+diff --git a/c-scape/Cargo.toml b/c-scape/Cargo.toml
+index 0f9cd2f..b317aa3 100644
+--- a/c-scape/Cargo.toml
++++ b/c-scape/Cargo.toml
+@@ -19,11 +19,11 @@ cc = { version = "1.0.68", optional = true }
+ 
+ [dependencies]
+ libm = "0.2.1"
+-rustix = { version = "1.0.0", default-features = false, features = ["event", "fs", "mm", "net", "param", "pipe", "process", "pty", "rand", "runtime", "shm", "stdio", "system", "termios", "thread", "time"] }
++rustix = { version = "1.1.5", default-features = false, features = ["event", "fs", "mm", "net", "param", "pipe", "process", "pty", "rand", "runtime", "shm", "stdio", "system", "termios", "thread", "time"] }
+ rustix-futex-sync = { version = "0.4.0", features = ["atomic_usize"] }
+ memoffset = "0.9.0"
+ realpath-ext = { version = "0.1.0", default-features = false }
+-origin = { version = "0.26.1", default-features = false, features = ["init-fini-arrays", "program-at-exit", "thread-at-exit", "nightly", "getauxval"] }
++origin = { path="../../origin", default-features = false, features = ["init-fini-arrays", "program-at-exit", "thread-at-exit", "nightly", "getauxval"] }
+ # We use the libc crate for C ABI types and constants, but we don't depend on
+ # the actual platform libc.
+ libc = { version = "0.2.155", default-features = false }
+diff --git a/c-scape/src/at_fork.rs b/c-scape/src/at_fork.rs
+index 40b03af..e3f2602 100644
+--- a/c-scape/src/at_fork.rs
++++ b/c-scape/src/at_fork.rs
+@@ -1,3 +1,4 @@
++use crate::rustix_runtime;
+ use alloc::vec::Vec;
+ use rustix_futex_sync::Mutex;
+ 
+@@ -50,7 +51,7 @@ pub(crate) fn at_fork(
+ /// # Safety
+ ///
+ /// Wildly unsafe. See the documentation comment for
+-/// [`rustix::runtime::kernel_fork`]. On top of that, this calls the unsafe
++/// [`rustix_runtime::kernel_fork`]. On top of that, this calls the unsafe
+ /// functions registered with [`at_fork`].
+ pub(crate) unsafe fn fork() -> rustix::io::Result<Option<rustix::process::Pid>> {
+     let funcs = FORK_FUNCS.lock();
+@@ -59,8 +60,8 @@ pub(crate) unsafe fn fork() -> rustix::io::Result<Option<rustix::process::Pid>>
+     funcs.prepare.iter().rev().for_each(|func| func());
+ 
+     // Call `fork`.
+-    match rustix::runtime::kernel_fork()? {
+-        rustix::runtime::Fork::Child(pid) => {
++    match rustix_runtime::kernel_fork()? {
++        rustix_runtime::Fork::Child(pid) => {
+             // The child's thread record is copied from the parent;
+             // update it with the child's current-thread-id.
+             #[cfg(feature = "thread")]
+@@ -72,7 +73,7 @@ pub(crate) unsafe fn fork() -> rustix::io::Result<Option<rustix::process::Pid>>
+             funcs.child.iter().for_each(|func| func());
+             Ok(None)
+         }
+-        rustix::runtime::Fork::ParentOf(child_pid) => {
++        rustix_runtime::Fork::ParentOf(child_pid) => {
+             // Callbacks after calling `fork`, in the parent.
+             funcs.parent.iter().for_each(|func| func());
+             Ok(Some(child_pid))
+diff --git a/c-scape/src/brk.rs b/c-scape/src/brk.rs
+index bfff45d..63d7ee9 100644
+--- a/c-scape/src/brk.rs
++++ b/c-scape/src/brk.rs
+@@ -1,4 +1,5 @@
+ use crate::convert_res;
++use crate::rustix_runtime;
+ use core::ptr::{null_mut, without_provenance_mut};
+ use errno::{set_errno, Errno};
+ use libc::{c_int, c_void, intptr_t};
+@@ -9,7 +10,7 @@ static mut CURRENT: *mut c_void = null_mut();
+ unsafe extern "C" fn brk(ptr: *mut c_void) -> c_int {
+     libc!(libc::brk(ptr));
+ 
+-    let new = match convert_res(rustix::runtime::kernel_brk(ptr)) {
++    let new = match convert_res(rustix_runtime::kernel_brk(ptr)) {
+         Some(new) => new,
+         None => return -1,
+     };
+@@ -33,7 +34,7 @@ unsafe extern "C" fn sbrk(increment: intptr_t) -> *mut c_void {
+ 
+     if old.is_null() {
+         // Read the current value from the OS.
+-        old = match convert_res(rustix::runtime::kernel_brk(null_mut())) {
++        old = match convert_res(rustix_runtime::kernel_brk(null_mut())) {
+             Some(old) => old,
+             None => return without_provenance_mut(!0),
+         };
+@@ -61,7 +62,7 @@ unsafe extern "C" fn sbrk(increment: intptr_t) -> *mut c_void {
+     }
+ 
+     // Install the new address.
+-    let new = match convert_res(rustix::runtime::kernel_brk(want)) {
++    let new = match convert_res(rustix_runtime::kernel_brk(want)) {
+         Some(new) => new,
+         None => {
+             CURRENT = old;
+diff --git a/c-scape/src/env/get.rs b/c-scape/src/env/get.rs
+index c0ac414..6e1cd66 100644
+--- a/c-scape/src/env/get.rs
++++ b/c-scape/src/env/get.rs
+@@ -1,5 +1,6 @@
+ //! Environment variable handling.
+ 
++use crate::rustix_runtime;
+ use core::ptr::null_mut;
+ use core::slice;
+ use libc::{c_char, c_int};
+@@ -19,7 +20,7 @@ unsafe extern "C" fn getenv(key: *const c_char) -> *mut c_char {
+ unsafe extern "C" fn secure_getenv(key: *const c_char) -> *mut c_char {
+     //libc!(libc::secure_getenv(key));
+ 
+-    if rustix::runtime::linux_secure() {
++    if rustix_runtime::linux_secure() {
+         return null_mut();
+     }
+ 
+diff --git a/c-scape/src/jmp.rs b/c-scape/src/jmp.rs
+index 34c7f3f..9de87d5 100644
+--- a/c-scape/src/jmp.rs
++++ b/c-scape/src/jmp.rs
+@@ -6,10 +6,11 @@
+ //! call them from C code that links to c-scape via its C ABI. All of the
+ //! magic is hidden in inside `naked_asm` blocks.
+ 
++use crate::rustix_runtime;
+ use core::arch::naked_asm;
+ use core::mem::size_of;
+ use libc::{c_int, c_void};
+-use rustix::runtime::{How, KernelSigSet};
++use rustix_runtime::{How, KernelSigSet};
+ 
+ #[allow(non_camel_case_types)]
+ type jmp_buf = *mut c_void;
+@@ -457,7 +458,7 @@ unsafe extern "C" fn __sigsetjmp_save(env: sigjmp_buf, savesigs: c_int) -> sigjm
+         let set = &mut *env
+             .byte_add(SIG_OFFSET + size_of::<usize>())
+             .cast::<KernelSigSet>();
+-        *set = rustix::runtime::kernel_sigprocmask(How::SETMASK, None).unwrap();
++        *set = rustix_runtime::kernel_sigprocmask(How::SETMASK, None).unwrap();
+     }
+ 
+     // Return the `env` value so that the assembly code doesn't have to save
+@@ -477,7 +478,7 @@ unsafe extern "C" fn siglongjmp(env: sigjmp_buf, val: c_int) -> ! {
+         let set = &*env
+             .byte_add(SIG_OFFSET + size_of::<usize>())
+             .cast::<KernelSigSet>();
+-        rustix::runtime::kernel_sigprocmask(How::SETMASK, Some(set)).ok();
++        rustix_runtime::kernel_sigprocmask(How::SETMASK, Some(set)).ok();
+     }
+ 
+     // Call `longjmp` to do the actual jump.
+diff --git a/c-scape/src/lib.rs b/c-scape/src/lib.rs
+index 9485030..e1729c5 100644
+--- a/c-scape/src/lib.rs
++++ b/c-scape/src/lib.rs
+@@ -3,7 +3,6 @@
+ #![no_std]
+ // Nightly Rust features that we depend on.
+ #![feature(thread_local)] // for `pthread_getspecific` etc.
+-#![feature(c_variadic)] // for `printf`, `ioctl`, etc.
+ #![feature(sync_unsafe_cell)] // for lots of libc static variables
+ #![feature(linkage)] // for `malloc` etc.
+ // Disable some common warnings.
+@@ -21,6 +20,8 @@ compile_error!("Enable one \"coexist-with-libc\" and \"take-charge\".");
+ 
+ extern crate alloc;
+ 
++use rustix::runtime_448b8ad740e2a26f as rustix_runtime;
++
+ // Re-export the libc crate's API. This allows users to depend on the c-scape
+ // crate in place of libc.
+ pub use libc::*;
+@@ -181,7 +182,7 @@ static GLOBAL_ALLOCATOR: rustix_dlmalloc::GlobalDlmalloc = rustix_dlmalloc::Glob
+ 
+ /// Convert a `KernelSigSet` into a `libc::sigset_t`.
+ #[cfg(feature = "take-charge")]
+-pub(crate) fn expand_sigset(set: rustix::runtime::KernelSigSet) -> libc::sigset_t {
++pub(crate) fn expand_sigset(set: rustix_runtime::KernelSigSet) -> libc::sigset_t {
+     let mut lc = core::mem::MaybeUninit::<libc::sigset_t>::uninit();
+     unsafe {
+         // First create an empty `sigset_t`.
+@@ -190,7 +191,7 @@ pub(crate) fn expand_sigset(set: rustix::runtime::KernelSigSet) -> libc::sigset_
+         // Then write a `KernelSigSet` into the beginning of it. It's
+         // guaranteed to have a subset of the layout.
+         lc.as_mut_ptr()
+-            .cast::<rustix::runtime::KernelSigSet>()
++            .cast::<rustix_runtime::KernelSigSet>()
+             .write(set);
+         lc.assume_init()
+     }
+diff --git a/c-scape/src/process/exec.rs b/c-scape/src/process/exec.rs
+index f720b93..a02b774 100644
+--- a/c-scape/src/process/exec.rs
++++ b/c-scape/src/process/exec.rs
+@@ -1,3 +1,4 @@
++use crate::rustix_runtime;
+ use rustix::fd::BorrowedFd;
+ use rustix::fs::AtFlags;
+ use rustix::mm::{mmap_anonymous, MapFlags, ProtFlags};
+@@ -78,7 +79,7 @@ unsafe extern "C" fn execve(
+ ) -> c_int {
+     libc!(libc::execve(prog, argv, envp));
+ 
+-    let err = rustix::runtime::execve(
++    let err = rustix_runtime::execve(
+         CStr::from_ptr(prog),
+         argv as *const *const _,
+         envp as *const *const _,
+@@ -108,7 +109,7 @@ unsafe extern "C" fn execvpe(
+     let file = CStr::from_ptr(file);
+     let file_bytes = file.to_bytes();
+     if file_bytes.contains(&b'/') {
+-        let err = rustix::runtime::execve(file, argv.cast(), envp.cast());
++        let err = rustix_runtime::execve(file, argv.cast(), envp.cast());
+         set_errno(Errno(err.raw_os_error()));
+         return -1;
+     }
+@@ -166,7 +167,7 @@ unsafe extern "C" fn execvpe(
+         let slice = slice::from_raw_parts(buffer, dir.len() + 1 + file_bytes.len() + 1);
+ 
+         // Run it! If this succeeds, it doesn't return.
+-        let error = rustix::runtime::execve(
++        let error = rustix_runtime::execve(
+             CStr::from_bytes_with_nul(slice).unwrap(),
+             argv.cast(),
+             envp.cast(),
+@@ -198,7 +199,7 @@ unsafe extern "C" fn fexecve(
+ ) -> c_int {
+     libc!(libc::fexecve(fd, argv, envp));
+ 
+-    let mut error = rustix::runtime::execveat(
++    let mut error = rustix_runtime::execveat(
+         BorrowedFd::borrow_raw(fd),
+         c"",
+         argv as *const *const _,
+@@ -218,7 +219,7 @@ unsafe extern "C" fn fexecve(
+         let fd_bytes = fd_dec.as_c_str().to_bytes_with_nul();
+         buf[PREFIX_LEN..PREFIX_LEN + fd_bytes.len()].copy_from_slice(fd_bytes);
+ 
+-        error = rustix::runtime::execve(
++        error = rustix_runtime::execve(
+             CStr::from_bytes_with_nul_unchecked(&buf),
+             argv.cast(),
+             envp.cast(),
+diff --git a/c-scape/src/process_.rs b/c-scape/src/process_.rs
+index 66e2b63..b796889 100644
+--- a/c-scape/src/process_.rs
++++ b/c-scape/src/process_.rs
+@@ -1,4 +1,5 @@
+ use crate::convert_res;
++use crate::rustix_runtime;
+ use core::ffi::CStr;
+ use core::mem::{size_of, zeroed};
+ use core::ptr::{addr_of, null_mut};
+@@ -178,7 +179,7 @@ unsafe extern "C" fn dl_iterate_phdr(
+ 
+     libc!(libc::dl_iterate_phdr(callback, data));
+ 
+-    let (phdr, _phent, phnum) = rustix::runtime::exe_phdrs();
++    let (phdr, _phent, phnum) = rustix_runtime::exe_phdrs();
+     let mut info = libc::dl_phdr_info {
+         dlpi_addr: addr_of!(__executable_start).expose_provenance() as _,
+         dlpi_name: c"/proc/self/exe".as_ptr(),
+diff --git a/c-scape/src/signal/mod.rs b/c-scape/src/signal/mod.rs
+index 8731b5f..6a78972 100644
+--- a/c-scape/src/signal/mod.rs
++++ b/c-scape/src/signal/mod.rs
+@@ -1,11 +1,12 @@
+ use crate::convert_res;
++use crate::rustix_runtime;
+ use core::mem::{size_of, size_of_val, transmute, zeroed};
+ use core::ptr::{addr_of, addr_of_mut, copy_nonoverlapping};
+ use errno::{set_errno, Errno};
+ use libc::*;
+ use origin::signal::{Sigaction, SigactionFlags};
+ use rustix::process::Signal;
+-use rustix::runtime::{How, KernelSigSet, Siginfo, Stack, KERNEL_SIGRTMAX, KERNEL_SIGRTMIN};
++use rustix_runtime::{How, KernelSigSet, Siginfo, Stack, KERNEL_SIGRTMAX, KERNEL_SIGRTMIN};
+ 
+ #[no_mangle]
+ unsafe extern "C" fn signal(signal: c_int, handler: sighandler_t) -> sighandler_t {
+@@ -128,7 +129,7 @@ unsafe extern "C" fn sigprocmask(how: c_int, set: *const sigset_t, oldset: *mut
+         Some(&*set.cast::<KernelSigSet>())
+     };
+ 
+-    match convert_res(rustix::runtime::kernel_sigprocmask(how, set)) {
++    match convert_res(rustix_runtime::kernel_sigprocmask(how, set)) {
+         Some(mut old) => {
+             if !oldset.is_null() {
+                 // Clear out the signals reserved for libc.
+@@ -148,7 +149,7 @@ unsafe extern "C" fn sigprocmask(how: c_int, set: *const sigset_t, oldset: *mut
+ unsafe extern "C" fn sigpending(set: *mut sigset_t) -> c_int {
+     libc!(libc::sigpending(set));
+ 
+-    let pending = rustix::runtime::kernel_sigpending();
++    let pending = rustix_runtime::kernel_sigpending();
+     set.write(crate::expand_sigset(pending));
+     0
+ }
+@@ -157,7 +158,7 @@ unsafe extern "C" fn sigpending(set: *mut sigset_t) -> c_int {
+ unsafe extern "C" fn sigsuspend(set: *const sigset_t) -> c_int {
+     libc!(libc::sigsuspend(set));
+ 
+-    match convert_res(rustix::runtime::kernel_sigsuspend(&*set.cast())) {
++    match convert_res(rustix_runtime::kernel_sigsuspend(&*set.cast())) {
+         Some(()) => 0,
+         None => -1,
+     }
+@@ -176,7 +177,7 @@ unsafe extern "C" fn sigaltstack(new: *const stack_t, old: *mut stack_t) -> c_in
+         Some(new.read())
+     };
+ 
+-    match convert_res(rustix::runtime::kernel_sigaltstack(new)) {
++    match convert_res(rustix_runtime::kernel_sigaltstack(new)) {
+         Some(old_stack) => {
+             if !old.is_null() {
+                 old.write(old_stack);
+@@ -200,7 +201,7 @@ unsafe extern "C" fn raise(sig: c_int) -> c_int {
+     // thread could exit and its thread id could get reused by another thread.
+     // But in this case, we're sending the signal to ourself, so we know we
+     // haven't exited.
+-    match convert_res(rustix::runtime::tkill(tid, sig)) {
++    match convert_res(rustix_runtime::tkill(tid, sig)) {
+         Some(()) => 0,
+         None => -1,
+     }
+@@ -215,7 +216,7 @@ unsafe extern "C" fn abort() -> ! {
+     // The `abort` function is documented to kill the current thread with an
+     // abort signal. As in `raise`, `tkill` is dangerous in general, but safe
+     // here.
+-    rustix::runtime::tkill(tid, Signal::ABORT).ok();
++    rustix_runtime::tkill(tid, Signal::ABORT).ok();
+ 
+     // That ought to work, but there's a possibility that the application has
+     // a handler for the abort signal and that the handler returns.
+@@ -224,7 +225,7 @@ unsafe extern "C" fn abort() -> ! {
+     // `Signal::Abort`, but doing that reliably requires taking a lock and
+     // coordinating with various other things, so for now just switch to
+     // a higher-powered way to terminate the process.
+-    rustix::runtime::tkill(tid, Signal::KILL).ok();
++    rustix_runtime::tkill(tid, Signal::KILL).ok();
+ 
+     // That *really* should have worked. But if we're somehow still running,
+     // abruptly exit the program.
+@@ -318,7 +319,7 @@ unsafe extern "C" fn sigismember(sigset: *const sigset_t, signum: c_int) -> c_in
+ unsafe extern "C" fn sigwait(set: *const sigset_t, sig: *mut c_int) -> c_int {
+     libc!(libc::sigwait(set, sig));
+ 
+-    match rustix::runtime::kernel_sigwait(&*set.cast()) {
++    match rustix_runtime::kernel_sigwait(&*set.cast()) {
+         Ok(signum) => {
+             sig.write(signum.as_raw());
+             0
+@@ -333,7 +334,7 @@ unsafe extern "C" fn sigwaitinfo(set: *const sigset_t, info: *mut siginfo_t) ->
+ 
+     let info: *mut Siginfo = checked_cast!(info);
+ 
+-    match convert_res(rustix::runtime::kernel_sigwaitinfo(&*set.cast())) {
++    match convert_res(rustix_runtime::kernel_sigwaitinfo(&*set.cast())) {
+         Some(info_value) => {
+             if !info.is_null() {
+                 info.write(info_value);
+@@ -363,7 +364,7 @@ unsafe extern "C" fn sigtimedwait(
+ 
+     let info: *mut Siginfo = checked_cast!(info);
+ 
+-    match convert_res(rustix::runtime::kernel_sigtimedwait(
++    match convert_res(rustix_runtime::kernel_sigtimedwait(
+         &*set.cast(),
+         timeout.as_ref(),
+     )) {
+diff --git a/c-scape/src/thread/mod.rs b/c-scape/src/thread/mod.rs
+index 5865560..bed1391 100644
+--- a/c-scape/src/thread/mod.rs
++++ b/c-scape/src/thread/mod.rs
+@@ -4,6 +4,7 @@ mod once;
+ mod rwlock;
+ mod spinlock;
+ 
++use crate::rustix_runtime;
+ use alloc::boxed::Box;
+ use alloc::format;
+ use core::ffi::c_void;
+@@ -12,7 +13,7 @@ use core::ptr::{self, copy_nonoverlapping, null_mut, NonNull};
+ use core::slice;
+ use origin::thread::{self, Thread};
+ use rustix::fs::{Mode, OFlags};
+-use rustix::runtime::KernelSigSet;
++use rustix_runtime::KernelSigSet;
+ 
+ use libc::{c_char, c_int, size_t};
+ 
+@@ -334,9 +335,9 @@ unsafe extern "C" fn pthread_sigmask(
+     libc!(libc::pthread_sigmask(how, set, oldset));
+ 
+     let how = match how {
+-        libc::SIG_BLOCK => rustix::runtime::How::BLOCK,
+-        libc::SIG_UNBLOCK => rustix::runtime::How::UNBLOCK,
+-        libc::SIG_SETMASK => rustix::runtime::How::SETMASK,
++        libc::SIG_BLOCK => rustix_runtime::How::BLOCK,
++        libc::SIG_UNBLOCK => rustix_runtime::How::UNBLOCK,
++        libc::SIG_SETMASK => rustix_runtime::How::SETMASK,
+         _ => return libc::EINVAL,
+     };
+ 
+@@ -350,7 +351,7 @@ unsafe extern "C" fn pthread_sigmask(
+         Some(&*set.cast::<KernelSigSet>())
+     };
+ 
+-    match rustix::runtime::kernel_sigprocmask(how, set) {
++    match rustix_runtime::kernel_sigprocmask(how, set) {
+         Ok(old) => {
+             if !oldset.is_null() {
+                 oldset.write(crate::expand_sigset(old));

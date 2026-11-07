@@ -1,0 +1,27 @@
+diff --git a/src/compiler/compile_kind.rs b/src/compiler/compile_kind.rs
+index 60038dd..6866934 100644
+--- a/src/compiler/compile_kind.rs
++++ b/src/compiler/compile_kind.rs
+@@ -64,8 +64,8 @@ impl CompileKind {
+     /// Creates a new list of `CompileKind` based on the requested list of
+     /// targets.
+     ///
+-    /// If no targets are given then this returns a single-element vector with
+-    /// `CompileKind::Host`.
++    /// If no targets are given, use the configured target or default to
++    /// `x86_64-unknown-linux-raw`.
+     pub fn from_requested_targets(
+         gctx: &GlobalContext,
+         targets: &[String],
+@@ -119,7 +119,10 @@ impl CompileKind {
+         }
+ 
+         let kinds = match (fallback, &gctx.build_config()?.target) {
+-            (_, None) | (CompileKindFallback::JustHost, _) => Ok(vec![CompileKind::Host]),
++            (CompileKindFallback::JustHost, _) => Ok(vec![CompileKind::Host]),
++            (CompileKindFallback::BuildConfig, None) => {
++                dedup(&["x86_64-unknown-linux-raw".to_owned()])
++            }
+             (CompileKindFallback::BuildConfig, Some(build_target_config)) => {
+                 dedup(&build_target_config.values(gctx.cwd())?)
+             }

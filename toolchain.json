@@ -1,0 +1,11 @@
+{
+  "release": "1.99.1",
+  "release_date": "2026-10-15",
+  "verified_date": "2026-11-07",
+  "rust_commit": "58cf8f9c35b355199727627d07ae34a4e2846d67",
+  "cargo_commit": "5f94df4789f005f9a352888e8355ffc645b7ed0e",
+  "origin_commit": "00afc4488f81a6b2abbcd52856ee2fb4e44ac0cb",
+  "c_ward_commit": "ac7e0f124aa678a7045d549aceb7e28ac233fe0f",
+  "host": "x86_64-unknown-linux-gnu",
+  "target": "x86_64-unknown-linux-raw"
+}

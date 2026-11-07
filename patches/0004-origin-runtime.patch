@@ -1,0 +1,240 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index f599523..e078f97 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -16,7 +16,7 @@ rust-version = "1.88"
+ 
+ [dependencies]
+ linux-raw-sys = { version = "0.12.0", default-features = false, optional = true, features = ["general", "no_std", "elf", "auxvec"] }
+-rustix = { version = "1.0.0", default-features = false }
++rustix = { version = "1.1.5", default-features = false }
+ bitflags = { version = "2.4.0", default-features = false }
+ log = { version = "0.4.14", default-features = false, optional = true }
+ rustix-futex-sync = { version = "0.4.0", optional = true }
+@@ -52,7 +52,7 @@ optional = true
+ # On aarch64, compiler_builtins depends on `getauxval`, so we need rustix with
+ # the "param" feature.
+ [target.'cfg(target_arch = "aarch64")'.dependencies.rustix]
+-version = "1.0.0"
++version = "1.1.5"
+ default-features = false
+ features = ["param"]
+ 
+diff --git a/src/arch/arm.rs b/src/arch/arm.rs
+index f40c516..c5762f3 100644
+--- a/src/arch/arm.rs
++++ b/src/arch/arm.rs
+@@ -1,5 +1,8 @@
+ //! Architecture-specific assembly code.
+ 
++#[cfg(all(feature = "take-charge", feature = "thread"))]
++use rustix::runtime_448b8ad740e2a26f as rustix_runtime;
++
+ #[cfg(any(
+     feature = "take-charge",
+     all(not(feature = "unwinding"), feature = "panic-handler-trap")
+@@ -268,7 +271,7 @@ pub(super) unsafe fn clone(
+ #[inline]
+ pub(super) unsafe fn set_thread_pointer(ptr: *mut c_void) {
+     unsafe {
+-        let res = rustix::runtime::arm_set_tls(ptr);
++        let res = rustix_runtime::arm_set_tls(ptr);
+         debug_assert_eq!(res, Ok(()));
+         debug_assert_eq!(thread_pointer(), ptr);
+     }
+diff --git a/src/arch/x86.rs b/src/arch/x86.rs
+index be16c4b..bafcffb 100644
+--- a/src/arch/x86.rs
++++ b/src/arch/x86.rs
+@@ -1,5 +1,8 @@
+ //! Architecture-specific assembly code.
+ 
++#[cfg(all(feature = "take-charge", feature = "thread"))]
++use rustix::runtime_448b8ad740e2a26f as rustix_runtime;
++
+ #[cfg(any(
+     feature = "take-charge",
+     all(not(feature = "unwinding"), feature = "panic-handler-trap")
+@@ -250,7 +253,7 @@ pub(super) unsafe fn clone(
+         asm!("mov {0:x}, gs", inout(reg) gs);
+         let entry_number = gs >> 3;
+ 
+-        let mut user_desc = rustix::runtime::UserDesc {
++        let mut user_desc = rustix_runtime::UserDesc {
+             entry_number,
+             base_addr: newtls.addr() as u32,
+             limit: 0xfffff,
+@@ -329,7 +332,7 @@ pub(super) unsafe fn clone(
+ #[inline]
+ pub(super) unsafe fn set_thread_pointer(ptr: *mut c_void) {
+     unsafe {
+-        let mut user_desc = rustix::runtime::UserDesc {
++        let mut user_desc = rustix_runtime::UserDesc {
+             entry_number: !0u32,
+             base_addr: ptr.addr() as u32,
+             limit: 0xfffff,
+@@ -343,7 +346,7 @@ pub(super) unsafe fn set_thread_pointer(ptr: *mut c_void) {
+         user_desc.set_limit_in_pages(1);
+         user_desc.set_seg_not_present(0);
+         user_desc.set_useable(1);
+-        let res = rustix::runtime::set_thread_area(&mut user_desc);
++        let res = rustix_runtime::set_thread_area(&mut user_desc);
+         debug_assert_eq!(res, Ok(()));
+         debug_assert_ne!(user_desc.entry_number, !0);
+ 
+diff --git a/src/arch/x86_64.rs b/src/arch/x86_64.rs
+index d2f126a..5389bff 100644
+--- a/src/arch/x86_64.rs
++++ b/src/arch/x86_64.rs
+@@ -1,5 +1,8 @@
+ //! Architecture-specific assembly code.
+ 
++#[cfg(all(feature = "take-charge", feature = "thread"))]
++use rustix::runtime_448b8ad740e2a26f as rustix_runtime;
++
+ #[cfg(any(
+     feature = "take-charge",
+     all(not(feature = "unwinding"), feature = "panic-handler-trap")
+@@ -259,7 +262,7 @@ pub(super) unsafe fn clone(
+ #[inline]
+ pub(super) unsafe fn set_thread_pointer(ptr: *mut c_void) {
+     unsafe {
+-        rustix::runtime::set_fs(ptr);
++        rustix_runtime::set_fs(ptr);
+         debug_assert_eq!(*ptr.cast::<*const c_void>(), ptr);
+         debug_assert_eq!(thread_pointer(), ptr);
+     }
+diff --git a/src/program/linux_raw.rs b/src/program/linux_raw.rs
+index e469c94..d0dadbe 100644
+--- a/src/program/linux_raw.rs
++++ b/src/program/linux_raw.rs
+@@ -35,6 +35,7 @@ use alloc::boxed::Box;
+ #[cfg(all(feature = "program-at-exit", not(feature = "thread")))]
+ use core::cell::UnsafeCell;
+ use linux_raw_sys::ctypes::c_int;
++use rustix::runtime_448b8ad740e2a26f as rustix_runtime;
+ #[cfg(all(feature = "program-at-exit", feature = "thread"))]
+ use rustix_futex_sync::Mutex;
+ 
+@@ -342,7 +343,7 @@ pub fn immediate_exit(status: c_int) -> ! {
+     log::trace!("Program exiting with status `{:?}`", status);
+ 
+     // Call `rustix` to exit the program.
+-    rustix::runtime::exit_group(status)
++    rustix_runtime::exit_group(status)
+ }
+ 
+ /// Execute a trap instruction.
+diff --git a/src/signal/libc.rs b/src/signal/libc.rs
+index d8c7164..68c3fa4 100644
+--- a/src/signal/libc.rs
++++ b/src/signal/libc.rs
+@@ -3,12 +3,13 @@
+ use core::mem::MaybeUninit;
+ use core::ptr::null;
+ use rustix::io;
++use rustix::runtime_448b8ad740e2a26f as rustix_runtime;
+ 
+ /// A signal action record for use with [`sigaction`].
+ pub type Sigaction = libc::sigaction;
+ 
+ /// A signal identifier for use with [`sigaction`].
+-pub use rustix::runtime::Signal;
++pub use rustix_runtime::Signal;
+ 
+ /// A signal handler function for use with [`Sigaction`].
+ pub use libc::sighandler_t as Sighandler;
+diff --git a/src/signal/linux_raw.rs b/src/signal/linux_raw.rs
+index 84d72b4..5692395 100644
+--- a/src/signal/linux_raw.rs
++++ b/src/signal/linux_raw.rs
+@@ -3,13 +3,14 @@
+ #[cfg(not(target_arch = "riscv64"))]
+ use crate::arch;
+ use rustix::io;
++use rustix::runtime_448b8ad740e2a26f as rustix_runtime;
+ 
+-pub use rustix::runtime::{
++pub use rustix_runtime::{
+     KernelSigaction as Sigaction, KernelSigactionFlags as SigactionFlags, Siginfo, Signal,
+ };
+ 
+ /// A handler function type for use with [`Sigaction`].
+-pub type Sighandler = rustix::runtime::KernelSighandler;
++pub type Sighandler = rustix_runtime::KernelSighandler;
+ 
+ /// Register a signal handler.
+ ///
+@@ -32,7 +33,7 @@ pub unsafe fn sigaction(sig: Signal, action: Option<Sigaction>) -> io::Result<Si
+             }
+         }
+ 
+-        rustix::runtime::kernel_sigaction(sig, action)
++        rustix_runtime::kernel_sigaction(sig, action)
+     }
+ }
+ 
+@@ -42,14 +43,14 @@ pub unsafe fn sigaction(sig: Signal, action: Option<Sigaction>) -> io::Result<Si
+ #[doc(alias = "SIG_IGN")]
+ #[must_use]
+ pub const fn sig_ign() -> Sighandler {
+-    rustix::runtime::kernel_sig_ign()
++    rustix_runtime::kernel_sig_ign()
+ }
+ 
+ /// A special “default” signal handler representing the default behavior
+ /// for handling a signal.
+ ///
+ /// If you're looking for `SigIgn`; use [`sig_ign`].
+-pub use rustix::runtime::KERNEL_SIG_DFL as SIG_DFL;
++pub use rustix_runtime::KERNEL_SIG_DFL as SIG_DFL;
+ 
+ /// `SIGSTKSZ`
+ pub const SIGSTKSZ: usize = linux_raw_sys::general::SIGSTKSZ as usize;
+diff --git a/src/thread/linux_raw.rs b/src/thread/linux_raw.rs
+index 0870a92..c266b64 100644
+--- a/src/thread/linux_raw.rs
++++ b/src/thread/linux_raw.rs
+@@ -23,12 +23,13 @@ use core::sync::atomic::Ordering::SeqCst;
+ use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU8, AtomicU32};
+ use linux_raw_sys::elf::*;
+ use rustix::io;
++use rustix::runtime_448b8ad740e2a26f as rustix_runtime;
+ use rustix::mm::{MapFlags, MprotectFlags, ProtFlags, mmap_anonymous, mprotect};
+ use rustix::param::{linux_execfn, page_size};
+ use rustix::process::{Resource, getrlimit};
+ #[cfg(feature = "signal")]
+-use rustix::runtime::{How, KernelSigSet, kernel_sigprocmask};
+-use rustix::runtime::{exe_phdrs, set_tid_address};
++use rustix_runtime::{How, KernelSigSet, kernel_sigprocmask};
++use rustix_runtime::{exe_phdrs, set_tid_address};
+ use rustix::thread::gettid;
+ 
+ pub use rustix::thread::Pid as ThreadId;
+@@ -343,7 +344,7 @@ pub(super) unsafe fn initialize_main(mem: *mut c_void) {
+         let guard_size = page_size();
+ 
+         // Initialize the canary value from the OS-provided random bytes.
+-        let random_ptr = rustix::runtime::random().cast::<usize>();
++        let random_ptr = rustix_runtime::random().cast::<usize>();
+         let canary = random_ptr.read_unaligned();
+         __stack_chk_guard = canary;
+ 
+@@ -377,7 +378,7 @@ pub(super) unsafe fn initialize_main(mem: *mut c_void) {
+             guard_size,
+             0,
+         );
+-        let tid = rustix::runtime::set_tid_address(thread_id_ptr.cast());
++        let tid = rustix_runtime::set_tid_address(thread_id_ptr.cast());
+         *thread_id_ptr = tid.as_raw_nonzero().get();
+ 
+         // Point the platform thread-pointer register at the new thread metadata.
+@@ -772,7 +773,7 @@ unsafe fn exit(return_value: Option<NonNull<c_void>>) -> ! {
+         }
+ 
+         // Terminate the thread.
+-        rustix::runtime::exit_thread(0)
++        rustix_runtime::exit_thread(0)
+     }
+ }
+ 

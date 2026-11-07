@@ -1,0 +1,9 @@
+[submodule "rust"]
+	path = rust
+	url = https://github.com/rust-lang/rust.git
+[submodule "origin"]
+	path = origin
+	url = https://github.com/sunfishcode/origin.git
+[submodule "c-ward"]
+	path = c-ward
+	url = https://github.com/sunfishcode/c-ward.git
